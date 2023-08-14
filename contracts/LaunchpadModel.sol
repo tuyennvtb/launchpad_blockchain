@@ -6,10 +6,11 @@ enum ProjectType { PRIVATE, PUBLIC }
 struct LaunchpadProject {
     uint256 ID;
     address token;
+    string projectName;
+    string description;
     ProjectType projectType;
     address master;
-    address fundToken;
-    uint256 fundTokenRatio;
+    uint256 ratio;
     uint256 tokenOnSale;
     uint256 saleTime;
     uint256 endTime;
@@ -17,6 +18,10 @@ struct LaunchpadProject {
     uint256 totalDeposit;
     uint8 monthLock;
     uint16 preClaimRatio;
+    bool requireFundToken;
+    address fundToken;
+    uint256 fundTokenRatio; 
+    uint256 fundAmountInETH;
     
 
     LaunchpadPrivate privateSaleDetail;
@@ -46,6 +51,8 @@ struct StakeTokenRequirement {
 struct LaunchpadPrivateVM {
     uint256 ID;
     address token;
+    string projectName;
+    string description;
     address master;
     address fundToken;
     uint256 fundTokenRatio;
@@ -58,10 +65,13 @@ struct LaunchpadPrivateVM {
     uint256 totalDeposit;
     uint256 tokenRemain;
     address[] whitelists;
+    uint256 fundAmountInETH;
 }
 
 struct LaunchpadPublicVM {
     uint256 ID;
+    string projectName;
+    string description;
     address token;
     address master;
     address fundToken;
@@ -72,6 +82,7 @@ struct LaunchpadPublicVM {
     uint256 processTime;
     uint256 totalDeposit;
     uint256[] tokenAllocation;
+    uint256 fundAmountInETH;
 }
 
 struct TransactionHistory {
@@ -79,5 +90,6 @@ struct TransactionHistory {
     address lockWallet;
     uint256 tokenAmount;
     uint256 depositAmount;
+    uint256 fundTokenAmount;
     bool processed;
 }

@@ -18,12 +18,7 @@ contract Launchpad is Ownable {
     StakeTokenRequirement[] public stakeTokenList;
     mapping(address => uint) stakeTokenIndex;
     mapping(address => TransactionHistory[]) public userTransactions;
-
-    /*
-    constructor(uint256 _projectIdSeed) {
-        projectIdSeed = _projectIdSeed;
-    }
-    */
+    uint256[] public projectIDList;
     
     constructor() {
         projectIdSeed = 1;
@@ -35,19 +30,25 @@ contract Launchpad is Ownable {
     }
 
     function addProject(
+            string memory projectName,
+            string memory description,
             address token,
             uint projectType, 
             address master,
             address fundToken,
             uint256[] memory additionalParams, //fundRatio-tokenOnSale-minimumAllocation-maximumAllocation-saleTime-endTime-processTime
             uint8 monthLock,
-            uint16 preClaimRatio
+            uint16 preClaimRatio,
+            uint256 ratio 
         ) external onlyOwner {
         LaunchpadProject storage project = projects[projectIdSeed];
         project.ID = projectIdSeed;
+        project.projectName=projectName;
+        project.description=description;
         project.projectType = ProjectType(projectType);
         project.token = token;
         project.master = master;
+        project.ratio = ratio;
         project.fundToken = fundToken;
         project.fundTokenRatio = additionalParams[0];
         project.tokenOnSale = additionalParams[1];
@@ -68,7 +69,7 @@ contract Launchpad is Ownable {
                 project.publicSaleDetail.tokenAllocation.push();
             }
         }
-
+        projectIDList.push(projectIdSeed);
         ++projectIdSeed;
     }
 
@@ -174,6 +175,31 @@ contract Launchpad is Ownable {
         project.processTime = block.timestamp;
     }
 
+    function getAllLaunchpadProject() external view returns(LaunchpadPrivateVM[] memory projectVM){
+        LaunchpadPrivateVM[] memory responseProjectList;
+        for(uint8 i = 0; i < projectIDList.length; i++){
+            LaunchpadProject storage project = projects[projectIDList[i]];
+            responseProjectList.push(LaunchpadPrivateVM(
+                project.ID,
+                project.token,
+                project.master,
+                project.fundToken,
+                project.fundTokenRatio,
+                project.tokenOnSale,
+                project.privateSaleDetail.minimumAllocation,
+                project.privateSaleDetail.maximumAllocation,
+                project.saleTime,
+                project.endTime,
+                project.processTime,
+                project.totalDeposit,
+                project.privateSaleDetail.tokenRemain,
+                project.privateSaleDetail.whitelists,
+                project.projectName,
+                project.description
+            ));
+        }
+        return responseProjectList;
+    }
     function getProjectPrivateDetail(uint256 projectId) external view returns(LaunchpadPrivateVM memory projectVM){
         LaunchpadProject storage project = projects[projectId];
         require(project.ID != 0, "PROJECT_ID_EXIST");
@@ -192,7 +218,9 @@ contract Launchpad is Ownable {
             project.processTime,
             project.totalDeposit,
             project.privateSaleDetail.tokenRemain,
-            project.privateSaleDetail.whitelists
+            project.privateSaleDetail.whitelists,
+            project.projectName,
+            project.description
         );
     }
 
@@ -211,7 +239,9 @@ contract Launchpad is Ownable {
             project.endTime,
             project.processTime,
             project.totalDeposit,
-            project.publicSaleDetail.tokenAllocation
+            project.publicSaleDetail.tokenAllocation,
+            project.projectName,
+            project.description
         );
     }
 
@@ -254,31 +284,34 @@ contract Launchpad is Ownable {
     }
 
     function processPublicSale(uint256 projectId, uint256 amount) external payable {
+        /*
+        * ratio = price
+        fund token ratio: limit per loyalty point
+        */
         require(amount > 0, "NON_ZERO_AMOUNT");
+        require(msg.value > 0 ether, "You need to send ETH to commit the launchpad");
         LaunchpadProject storage project = projects[projectId];
+        IERC20 fundToken;
+        if(project.fundToken){
+            fundToken = IERC20(project.fundToken);
+        }
         require(project.ID != 0, "PROJECT_ID_EXIST");
         require(project.projectType == ProjectType.PUBLIC, "INVALID_PROJECT_TYPE");
         require(block.timestamp >= project.saleTime && block.timestamp <= project.endTime, "TIME_REQUIREMENT");
         require(project.txHistories[msg.sender].tokenAmount == 0, "ALREADY_BOUGHT");
-        /*
-        uint8 userStatus = getUserStatus(msg.sender);
-        require(userStatus > 0, "VIP_STATUS_REQUIREMENT");
-        */
-        uint256 tokenAllocation;
-        uint8 fundTokenDecimal = IERC20(project.fundToken).decimals();
+
         uint8 tokenDecimal = IERC20(project.token).decimals();
-        if (fundTokenDecimal <= tokenDecimal) {
-            tokenAllocation = amount.mul(10** (tokenDecimal - fundTokenDecimal)).mul(project.fundTokenRatio).div(1e18);
-        }else {
-            tokenAllocation = amount.mul(project.fundTokenRatio).div(10 ** (fundTokenDecimal - tokenDecimal)).div(1e18);
+        uint256 userAmountToCommit = msg.value.mul(project.ratio).div(1e18).mul(10 ** tokenDecimal);
+        //get the maximum that user can commit
+        uint256 userMaximumAmount = project.fundTokenRatio.mul(amount);
+        require(userMaximumAmount > userAmountToCommit, "Your maximum commitment is "+userMaximumAmount.div(project.ratio));
+        if(project.fundToken){
+            IERC20(project.fundToken).transferFrom(msg.sender, address(this), amount);
         }
-        uint256 tokenLimit = project.publicSaleDetail.tokenAllocation[userStatus];
-        require(tokenAllocation <= tokenLimit, "TOKEN_LIMIT");
-        IERC20(project.fundToken).transferFrom(msg.sender, address(this), amount);
-        project.totalDeposit += tokenAllocation;
-        project.txHistories[msg.sender] = TransactionHistory(projectId, address(0), tokenAllocation, amount, false);
+        project.totalDeposit += msg.value;
+        project.txHistories[msg.sender] = TransactionHistory(projectId, msg.sender, userAmountToCommit, msg.value, amount, false);
         userTransactions[msg.sender].push(project.txHistories[msg.sender]);
-        emit UserProcessPublicSale(msg.sender, projectId, userStatus, tokenAllocation, amount, block.timestamp);
+        
     }
 
     function getUserStatus(address user) public view returns(uint8) {
@@ -342,13 +375,14 @@ contract Launchpad is Ownable {
         txHistory.processed = true;
         uint256 tokenAllocation = txHistory.tokenAmount;
         uint256 depositPayback = 0;
+        uint256 fundTokenPayback = 0;
         if (project.totalDeposit > project.tokenOnSale){
             tokenAllocation = tokenAllocation.mul(project.tokenOnSale).div(project.totalDeposit);
             depositPayback = txHistory.depositAmount.mul(project.totalDeposit.sub(project.tokenOnSale)).div(project.totalDeposit);
+            fundTokenPayback = txHistory.fundTokenAmount.mul(project.totalDeposit.sub(project.tokenOnSale)).div(project.totalDeposit);
+
         }
-        if (depositPayback > 0){
-            IERC20(project.fundToken).transfer(msg.sender, depositPayback);
-        }
+        
         if (project.monthLock == 0 || project.preClaimRatio >= 1e4){
             IERC20(project.token).transfer(msg.sender, tokenAllocation);
         }else {
@@ -357,6 +391,10 @@ contract Launchpad is Ownable {
             uint256 lockTokenAmount = tokenAllocation.sub(preClaimTokenAmount);
             txHistory.lockWallet = address(new LockWallet(msg.sender, project.token, lockTokenAmount, preClaimTokenAmount, preClaimTokenAmount, project.monthLock, project.endTime));
             IERC20(project.token).transfer(txHistory.lockWallet, lockTokenAmount);
+        }
+        if (depositPayback > 0){
+            IERC20(project.fundToken).transfer(msg.sender, fundTokenPayback);
+            msg.sender.transfer(depositPayback);
         }
 
         emit UserProcessPostPublicSale(msg.sender, projectId, tokenAllocation, txHistory.depositAmount, depositPayback, txHistory.lockWallet, block.timestamp);
